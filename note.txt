@@ -561,7 +561,65 @@ Steps 6–10
 Update it to:
 
 
+Presentation startup sequence  START PRESENTATION STEPS:
 
+1. Start Minikube
+
+minikube start -p assignment1
+
+2. Check that the node is ready
+
+kubectl get nodes
+
+You want to see:
+
+assignment1   Ready
+
+3. Check your application pods
+
+kubectl get pods -n assignment1
+
+You should see your:
+
+frontend pods
+backend pods
+MongoDB pod
+
+with Running status.
+
+4. Check the services
+
+kubectl get svc -n assignment1
+
+5. Check the Ingress
+
+kubectl get ingress -n assignment1
+
+You should see:
+
+myapp.example.com
+
+6. Check the certificate
+
+kubectl get certificate -n assignment1
+
+You want:
+
+READY   True
+
+7. Make sure /etc/hosts still has
+
+192.168.76.2 myapp.example.com
+
+Check with:
+
+getent hosts myapp.example.com
+
+8. Open the application
+
+In your browser:
+
+https://myapp.example.com
 
 
 
