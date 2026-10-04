@@ -1,0 +1,77 @@
+# =========================
+# Environment / Secrets
+# =========================
+
+.env
+.env.*
+!.env.example
+
+# Kubernetes local secrets
+*.secret.yaml
+*.secret.yml
+
+# Ignore the actual Kubernetes Secret manifest
+# because it contains credentials
+k8s/secret.yaml
+
+
+# =========================
+# Node.js
+# =========================
+
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+
+# =========================
+# Build / Coverage
+# =========================
+
+dist/
+build/
+coverage/
+
+
+# =========================
+# Logs
+# =========================
+
+*.log
+logs/
+
+
+# =========================
+# OS files
+# =========================
+
+.DS_Store
+Thumbs.db
+
+
+# =========================
+# VS Code
+# =========================
+
+.vscode/
+*.code-workspace
+
+
+# =========================
+# Temporary files
+# =========================
+
+*.tmp
+*.temp
+*.swp
+*.swo
+*~
+
+
+# =========================
+# Minikube / Kubernetes local files
+# =========================
+
+.minikube/

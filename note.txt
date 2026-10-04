@@ -1,0 +1,567 @@
+Step 1 — Create the project structure
+Run:
+mkdir -p frontend backend k8s && \
+touch frontend/index.html \
+frontend/Dockerfile \
+backend/server.js \
+backend/package.json \
+backend/Dockerfile \
+k8s/frontend-config.yaml \
+k8s/frontend-deployment.yaml \
+k8s/backend-config.yaml \
+k8s/backend-deployment.yaml \
+k8s/mongodb-deployment.yaml \
+k8s/app-ingress.yaml \
+k8s/cluster-issuer.yaml \
+k8s/kustomization.yaml
+
+
+touch k8s/namespace.yaml  (apiVersion: v1
+kind: Namespace
+metadata:
+  name: assignment1)
+
+
+TO APPLY:
+kubectl apply -k k8s/
+TO START MINIKUBE 
+minikube start -p assignment1
+minikube status -p assignment1 TO CHK IF RUNNING
+kubectl get nodes    TO CHK RUNNING NODES
+
+
+In summary:
+eval $(minikube docker-env)
+👉 Makes your terminal use Minikube's Docker environment.
+docker build -t frontend:1.0 ./frontend
+👉 Builds your frontend Docker image inside that Minikube environment.
+The main purpose
+To make the frontend:1.0 image available directly to Kubernetes inside Minikube, without pushing it to Docker Hub.
+
+reates a Kubernetes ConfigMap called:
+frontend-config:
+apiVersion: v1
+kind: ConfigMap
+
+metadata:
+  name: frontend-config
+
+data:
+  config.json: |    (Kubernetes will preserve the JSON as a multi-line value.)
+    {
+      "apiUrl": "/api"   (frontend can use /api as the backend API path without hard-coding the backend's actual address into the frontend image.)
+    }
+
+USING KUSTOMIZATION:
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: assignment1
+resources:
+  - namespace.yaml
+  - frontend-config.yaml
+  - frontend-deployment.yaml
+  - backend-config.yaml
+  - backend-deployment.yaml
+  - mongodb-deployment.yaml
+  - app-ingress.yaml
+  - cluster-issuer.yaml
+
+
+First
+eval $(minikube docker-env)
+This switches your terminal to Minikube's Docker environment.
+Then
+docker build -t backend:1.0 ./backend
+This builds your backend image inside Minikube:
+backend:1.0
+
+
+Developer A should be allowed to update ConfigMaps, but should NOT be allowed to delete Deployments or read Secrets.
+That's the purpose of RBAC — Role-Based Access Control.
+Instead of saying:
+"Everyone can do everything."
+you say:
+"This identity can perform these specific actions on these specific resources."
+
+2. What are we creating?
+These four commands create four pieces of the permission system.
+
+First: create an identity
+kubectl create serviceaccount backend-team
+This creates:
+ServiceAccount: backend-team
+
+Think of it as a Kubernetes identity.
+For this exercise, we're pretending:
+
+backend-team = the backend engineering team
+
+Second: create the permission
+kubectl create role configmap-editor \
+  --verb=get,list,watch,update,patch \
+  --resource=configmaps
+
+This creates a Role called:
+configmap-editor
+It says:
+Whoever gets this Role can work with ConfigMaps in this namespace using these actions.
+
+The permissions mean:
+get       → read one ConfigMap
+list      → see ConfigMaps
+watch     → watch for changes
+update    → modify a ConfigMap
+patch     → partially modify a ConfigMap
+
+Notice something important:
+There is no delete.
+So this role cannot delete ConfigMaps.
+That's the principle of least privilege.
+
+3. Give the identity the permission
+Now:
+kubectl create rolebinding backend-team-can-edit-configmaps \
+  --role=configmap-editor \
+  --serviceaccount=default:backend-team
+
+This connects the two:
+backend-team
+     │
+     │ RoleBinding
+     ▼
+configmap-editor
+
+So Kubernetes now knows:
+backend-team is allowed to perform the actions defined in configmap-editor.
+
+4. Test whether it actually works
+This command:
+
+kubectl auth can-i update configmaps \
+  --as=system:serviceaccount:default:backend-team
+
+is basically asking Kubernetes:
+"If I were the backend-team ServiceAccount, would I be allowed to update a ConfigMap?"
+You should get:
+
+yes
+
+Then:
+
+kubectl auth can-i update configmaps \
+  --as=system:serviceaccount:default:default
+
+You should get:
+
+no
+because we didn't give the default ServiceAccount the configmap-editor Role.
+
+HOW I RECOMMEND FOR this assignment:
+First make sure your namespace exists:
+
+kubectl get namespace assignment1
+
+Then create the ServiceAccount inside assignment1:
+
+kubectl create serviceaccount backend-team -n assignment1
+
+Then create the Role:
+
+kubectl create role configmap-editor \
+  --verb=get,list,watch,update,patch \
+  --resource=configmaps \
+  -n assignment1
+
+Then bind them:
+
+kubectl create rolebinding backend-team-can-edit-configmaps \
+  --role=configmap-editor \
+  --serviceaccount=assignment1:backend-team \
+  -n assignment1
+
+THEN TEST :
+
+kubectl auth can-i update configmaps \
+  --as=system:serviceaccount:assignment1:backend-team \
+  -n assignment1
+
+Expected:
+
+yes
+
+And test the normal/default ServiceAccount:
+
+kubectl auth can-i update configmaps \
+  --as=system:serviceaccount:assignment1:default \
+  -n assignment1
+
+Expected:
+
+no
+
+FOR VERSIONING: 
+touch k8s/backend-config-v2.yaml
+Open it:
+code k8s/backend-deployment.yaml
+Find:
+envFrom:
+  - configMapRef:
+      name: backend-config
+
+Change only the name:
+envFrom:
+  - configMapRef:
+      name: backend-config-v2
+
+- backend-config-v2.yaml:  ADD IT TO KUSTOMIZATION
+
+Stage 4 — CREATE the MongoDB Secret
+touch k8s/secret.yaml and add it to the kustomization.yaml
+
+Apply ONLY the Secret: kubectl apply -f k8s/secret.yaml -n assignment1
+kubectl get secret mongo-credentials -n assignment1
+See the Secret
+Run:
+kubectl get secret mongo-credentials -n assignment1 -o yaml
+You'll see something similar to:
+data:
+  password: U3VwZXJTZWNyZXQxMjM=
+  username: YWRtaW4=
+Now demonstrate the base64 issue:
+echo 'U3VwZXJTZWNyZXQxMjM=' | base64 -d
+You'll get:
+SuperSecret123
+
+RBAC FOR THE SECRETS: 
+Create the ServiceAccount:
+
+kubectl create serviceaccount backend-app -n assignment1
+
+Create the Role:
+
+kubectl create role secret-reader \
+  --verb=get,list \
+  --resource=secrets \
+  -n assignment1
+
+Create the RoleBinding:
+
+kubectl create rolebinding backend-app-can-read-secrets \
+  --role=secret-reader \
+  --serviceaccount=assignment1:backend-app \
+  -n assignment1
+
+Now test:
+
+kubectl auth can-i get secrets \
+  --as=system:serviceaccount:assignment1:backend-app \
+  -n assignment1
+
+Expected:
+
+yes
+
+Then test the default ServiceAccount:
+
+kubectl auth can-i get secrets \
+  --as=system:serviceaccount:assignment1:default \
+  -n assignment1
+
+Expected:
+
+no
+
+This demonstrates exactly what RBAC is doing.
+
+STAGE 5 — MongoDB
+Stage 5 — Apply MongoDB only
+
+Again, don't apply the entire project.
+
+Run:
+
+kubectl apply -f k8s/mongodb-deployment.yaml -n assignment1
+
+Then:
+
+kubectl get pods -n assignment1
+
+You should eventually see something like:
+
+mongodb-xxxxxxxxxx-xxxxx   1/1   Running
+
+Then check the Service:
+
+kubectl get svc -n assignment1
+
+You should see:
+
+mongodb-service   ClusterIP   ...   27017/TCP
+
+That ClusterIP is exactly what we want.
+
+MongoDB is not exposed to the internet.
+
+Next step: verify MongoDB received the credentials
+Run:
+kubectl exec -it deployment/mongodb -n assignment1 -- \
+  mongosh -u admin -p SuperSecret123 --authenticationDatabase admin
+
+If the credentials are correct, you should get a MongoDB shell prompt similar to:
+test>
+
+Next: connect the Backend to the Secret:
+Open the existing file:
+
+code k8s/backend-deployment.yaml
+Under ports, add the Secret environment variables:
+containers:
+  - name: backend
+    image: backend:1.0
+    imagePullPolicy: Never
+    ports:
+      - containerPort: 3000
+
+    env:
+      - name: MONGO_USERNAME
+        valueFrom:
+          secretKeyRef:
+            name: mongo-credentials
+            key: username
+
+      - name: MONGO_PASSWORD
+        valueFrom:
+          secretKeyRef:
+            name: mongo-credentials
+            key: password
+
+    envFrom:
+      - configMapRef:
+          name: backend-config-v2
+
+
+Next step — build the backend image inside Minikube
+
+From your project root (the directory containing frontend, backend, and k8s), run:
+
+eval $(minikube -p assignment1 docker-env)
+docker build -t backend:1.0 ./backend
+After it finishes, verify:
+
+minikube image ls -p assignment1 | grep backend
+minikube image ls -p assignment1 | grep -E 'backend|frontend'
+
+Next step — let Kubernetes create the backend Pods again
+Your Deployment already exists, but the Pods were created when the image wasn't available. We can trigger a new rollout:
+kubectl rollout restart deployment/backend -n assignment1
+Then check:
+kubectl get pods -n assignment1
+We want to see:
+backend-xxxxx   1/1   Running
+backend-xxxxx   1/1   Running
+mongodb-xxxxx   1/1   Running
+
+
+Step 5 — Create the frontend ConfigMap
+kubectl apply -f k8s/frontend-config.yaml -n assignment1
+kubectl get configmaps -n assignment1
+kubectl get pods -n assignment1
+
+Next step
+First, let's verify the Services:
+kubectl get services -n assignment1
+
+Next step — test the backend directly
+We'll first confirm that the backend responds through its Kubernetes Service.
+Run:
+kubectl run test-client \
+  --image=curlimages/curl \
+  --rm -it \
+  --restart=Never \
+  -n assignment1 \
+  -- curl http://backend-service:3000
+
+This temporarily creates a small curl Pod, calls backend-service, then removes the Pod.
+
+Next step — test MongoDB Service connectivity
+
+Run:
+
+kubectl run mongo-test \
+  --image=mongo:6 \
+  --rm -it \
+  --restart=Never \
+  -n assignment1 \
+  -- mongosh "mongodb://admin:SuperSecret123@mongodb-service:27017/admin"
+
+If it connects successfully, you'll get a MongoDB prompt such as:
+
+test>
+
+Stage 6 — Step 1: Enable Minikube Ingress
+Run:
+minikube addons enable ingress -p assignment1
+Then:
+kubectl get pods -n ingress-nginx
+
+Stage 6 — Finish Ingress testing
+Step 4 — Get the Minikube IP
+minikube ip -p assignment1
+Step 5 — Save it as a variable
+INGRESS_IP=$(minikube ip -p assignment1)
+Step 6 — Test the frontend through Ingress
+curl -H "Host: myapp.example.com" http://$INGRESS_IP/
+
+You should get your frontend HTML, including:
+
+Welcome to Our Store
+Step 7 — Test the backend through Ingress
+curl -H "Host: myapp.example.com" http://$INGRESS_IP/api
+
+You should get something like:
+
+{"message":"Backend is running","dbHost":"mongodb-service","dbUser":"admin"}
+Step 8 — Check the Ingress details
+kubectl describe ingress app-ingress -n assignment1
+
+This should show the two routes:
+
+/api  → backend-service:3000
+/     → frontend-service:80
+
+
+Stage 7 — Ingress Security
+
+We'll do the next ~5 steps together.
+
+Step 1 — Create the ServiceAccount
+
+Because your application is in assignment1, we must not use the default namespace from the original instructions.
+
+Run:
+
+kubectl create serviceaccount platform-team -n assignment1
+Step 2 — Create the Ingress editing Role
+kubectl create role ingress-editor \
+  --verb=get,list,watch,update,patch \
+  --resource=ingresses \
+  -n assignment1
+Step 3 — Bind the Role to platform-team
+kubectl create rolebinding platform-team-can-edit-ingress \
+  --role=ingress-editor \
+  --serviceaccount=assignment1:platform-team \
+  -n assignment1
+Step 4 — Verify that platform-team CAN edit Ingress
+kubectl auth can-i update ingresses \
+  --as=system:serviceaccount:assignment1:platform-team \
+  -n assignment1
+
+Expected:
+yes
+Step 5 — Verify that the default ServiceAccount CANNOT edit Ingress
+kubectl auth can-i update ingresses \
+  --as=system:serviceaccount:assignment1:default \
+  -n assignment1
+
+Expected:
+no
+
+Stage 7 — Step 7: Disable snippet annotations
+
+Run:
+
+kubectl -n ingress-nginx patch configmap ingress-nginx-controller \
+  --type merge \
+  -p '{"data":{"allow-snippet-annotations":"false"}}'
+
+Then verify:
+
+kubectl get configmap ingress-nginx-controller \
+  -n ingress-nginx \
+  -o jsonpath='{.data.allow-snippet-annotations}{"\n"}'
+
+Expected:
+
+false
+Step 8 — Restart the controller
+
+The controller needs to reload its configuration:
+
+kubectl rollout restart deployment/ingress-nginx-controller -n ingress-nginx
+Step 9 — Wait for it to become Ready
+kubectl rollout status deployment/ingress-nginx-controller -n ingress-nginx
+
+You should eventually see:
+deployment "ingress-nginx-controller" successfully rolled out
+Step 10 — Confirm the controller is Running
+kubectl get pods -n ingress-nginx
+
+We should see the controller at:
+1/1   Running
+
+
+Stage 8 — TLS with cert-manager
+We'll continue with roughly 5 steps at a time.
+Step 1 — Install cert-manager
+The instructions you pasted use v1.16.2, but that's an older version. Since this is a current setup, let's first check the available/current chart version rather than blindly installing the old one.
+Run:
+helm repo add jetstack https://charts.jetstack.io
+Then:
+helm repo update
+Then:
+helm search repo jetstack/cert-manager --versions | head -10
+
+
+Stage 8 — Steps 1–5
+1. Install cert-manager
+
+helm install cert-manager jetstack/cert-manager \
+  --namespace cert-manager \
+  --create-namespace \
+  --version v1.21.2 \
+  --set crds.enabled=true
+
+Purpose: Installs cert-manager and its CRDs into the cert-manager namespace.
+2. Check the pods
+kubectl get pods -n cert-manager
+We want the cert-manager pods to eventually show:
+Running
+3. Check the CRDs
+kubectl get crd | grep cert-manager
+You should see resources such as:
+
+certificates.cert-manager.io
+clusterissuers.cert-manager.io
+issuers.cert-manager.io
+4. Create the self-signed ClusterIssuer
+Open:
+k8s/cluster-issuer.yaml
+Make sure it contains:
+
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: selfsigned-issuer
+spec:
+  selfSigned: {}
+
+5. Apply it
+
+Because ClusterIssuer is cluster-scoped, don't add -n assignment1:
+kubectl apply -f k8s/cluster-issuer.yaml
+Then check:
+kubectl get clusterissuer
+We want:
+selfsigned-issuer   True
+
+Steps 6–10
+
+6. Edit k8s/app-ingress.yaml
+
+Update it to:
+
+
+
+
+
+

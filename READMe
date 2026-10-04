@@ -1,0 +1,1083 @@
+# Assignment 1 — Kubernetes Deployment on Minikube
+
+## 1. Project Overview
+
+This project demonstrates the deployment of a simple three-tier application on a local Kubernetes cluster using **Minikube**.
+
+The application consists of:
+
+* **Frontend** — Nginx serving a static web page
+* **Backend** — Node.js HTTP server
+* **MongoDB** — Database service
+* **Kubernetes Services** — Internal communication between application components
+* **Ingress NGINX** — External HTTP/HTTPS routing
+* **ConfigMaps** — Non-sensitive application configuration
+* **Secrets** — MongoDB credentials
+* **RBAC** — Access control for Kubernetes resources
+* **cert-manager** — TLS certificate management
+* **Kustomize** — Managing the complete Kubernetes deployment from one configuration
+
+The final application is accessed through:
+
+```text
+https://myapp.example.com
+```
+
+The Minikube IP used was:
+
+```text
+192.168.76.2
+```
+
+The Kubernetes namespace used throughout the project was:
+
+```text
+assignment1
+```
+
+---
+
+# 2. Project Architecture
+
+The final architecture is:
+
+```text
+                         Browser
+                            |
+                            | HTTPS
+                            | myapp.example.com
+                            v
+                  +----------------------+
+                  |    NGINX Ingress     |
+                  |    192.168.76.2      |
+                  +----------+-----------+
+                             |
+                +------------+------------+
+                |                         |
+              / |                       /api
+                |                         |
+                v                         v
+       +----------------+        +----------------+
+       | Frontend       |        | Backend        |
+       | Service :80    |        | Service :3000  |
+       +-------+--------+        +--------+-------+
+               |                          |
+               v                          |
+       +----------------+                 |
+       | Frontend Pods  |                 |
+       | 2 replicas     |                 |
+       +----------------+                 |
+                                          |
+                                          v
+                                 +----------------+
+                                 | MongoDB        |
+                                 | Service :27017 |
+                                 +----------------+
+```
+
+TLS is handled through:
+
+```text
+cert-manager
+      |
+      v
+selfsigned-issuer
+      |
+      v
+app-tls-secret
+      |
+      v
+NGINX Ingress HTTPS
+```
+
+---
+
+# 3. Minikube Cluster
+
+A dedicated Minikube profile was created for this assignment:
+
+```bash
+minikube start -p assignment1
+```
+
+The profile allows this project to remain separate from other Minikube projects.
+
+The Minikube IP was:
+
+```text
+192.168.76.2
+```
+
+It was verified with:
+
+```bash
+minikube ip -p assignment1
+```
+
+Result:
+
+```text
+192.168.76.2
+```
+
+---
+
+# 4. Kubernetes Namespace
+
+A dedicated namespace was created for the application.
+
+File:
+
+```text
+k8s/namespace.yaml
+```
+
+Contents:
+
+```yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: assignment1
+```
+
+The namespace separates the application's resources from resources belonging to other projects.
+
+Verification:
+
+```bash
+kubectl get namespace
+```
+
+---
+
+# 5. Frontend Application
+
+The frontend is a simple HTML application served by Nginx.
+
+## Frontend Dockerfile
+
+```dockerfile
+FROM nginx:alpine
+
+COPY index.html /usr/share/nginx/html/index.html
+
+EXPOSE 80
+```
+
+The application is served by Nginx on port `80`.
+
+The Docker image was built inside Minikube's Docker environment.
+
+```bash
+eval $(minikube -p assignment1 docker-env)
+```
+
+Then:
+
+```bash
+docker build -t frontend:1.0 ./frontend
+```
+
+Because the image exists directly inside Minikube, the Deployment uses:
+
+```yaml
+image: frontend:1.0
+imagePullPolicy: Never
+```
+
+This prevents Kubernetes from attempting to pull the image from Docker Hub.
+
+---
+
+# 6. Frontend ConfigMap
+
+The frontend configuration was stored in:
+
+```text
+k8s/frontend-config.yaml
+```
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: frontend-config
+data:
+  config.json: |
+    {
+      "apiUrl": "/api"
+    }
+```
+
+The ConfigMap is mounted into the frontend container:
+
+```text
+/usr/share/nginx/html/config.json
+```
+
+This demonstrates how application configuration can be separated from the Docker image.
+
+---
+
+# 7. Frontend Deployment and Service
+
+The frontend Deployment runs two replicas:
+
+```yaml
+replicas: 2
+```
+
+The container listens on:
+
+```text
+80
+```
+
+The frontend Service exposes it internally:
+
+```yaml
+kind: Service
+metadata:
+  name: frontend-service
+```
+
+The Service is a:
+
+```text
+ClusterIP
+```
+
+This means the frontend does not need to be directly exposed to the Internet. NGINX Ingress handles external access.
+
+---
+
+# 8. Backend Application
+
+The backend is a Node.js HTTP server.
+
+The application listens on the port supplied by:
+
+```text
+PORT
+```
+
+The backend code returns:
+
+```json
+{
+  "message": "Backend is running",
+  "dbHost": "mongodb-service",
+  "dbUser": "admin"
+}
+```
+
+The backend Dockerfile is:
+
+```dockerfile
+FROM node:18-alpine
+
+WORKDIR /app
+
+COPY package.json server.js ./
+
+EXPOSE 3000
+
+CMD ["node", "server.js"]
+```
+
+The backend image was built with:
+
+```bash
+docker build -t backend:1.0 ./backend
+```
+
+The Kubernetes Deployment uses:
+
+```yaml
+image: backend:1.0
+imagePullPolicy: Never
+```
+
+---
+
+# 9. Backend ConfigMap
+
+The backend configuration was stored in:
+
+```text
+k8s/backend-config-v2.yaml
+```
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: backend-config-v2
+data:
+  PORT: "3000"
+  MONGO_HOST: "mongodb-service"
+  MONGO_DB: "shopdb"
+immutable: true
+```
+
+The ConfigMap is marked:
+
+```yaml
+immutable: true
+```
+
+This prevents the existing ConfigMap from being modified.
+
+Instead, if configuration needs to change, a new version such as `backend-config-v3` can be created.
+
+The backend Deployment references:
+
+```yaml
+envFrom:
+  - configMapRef:
+      name: backend-config-v2
+```
+
+---
+
+# 10. Kubernetes Secret
+
+MongoDB credentials were stored in:
+
+```text
+k8s/secret.yaml
+```
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: mongo-credentials
+type: Opaque
+stringData:
+  username: admin
+  password: SuperSecret123
+```
+
+The Secret is used by MongoDB and the backend.
+
+The Secret was verified using:
+
+```bash
+kubectl get secret mongo-credentials -n assignment1 -o yaml
+```
+
+Kubernetes stores the values in the Secret's `data` section using Base64 encoding.
+
+Base64 is **not encryption**. Therefore, production credentials should not normally be committed as plaintext into Git.
+
+---
+
+# 11. MongoDB Deployment
+
+MongoDB was deployed using:
+
+```text
+mongo:6
+```
+
+The MongoDB Deployment uses the Secret for its root credentials:
+
+```yaml
+env:
+  - name: MONGO_INITDB_ROOT_USERNAME
+    valueFrom:
+      secretKeyRef:
+        name: mongo-credentials
+        key: username
+
+  - name: MONGO_INITDB_ROOT_PASSWORD
+    valueFrom:
+      secretKeyRef:
+        name: mongo-credentials
+        key: password
+```
+
+MongoDB listens on:
+
+```text
+27017
+```
+
+A Kubernetes Service named:
+
+```text
+mongodb-service
+```
+
+provides internal DNS-based access.
+
+Applications inside the namespace can access MongoDB using:
+
+```text
+mongodb-service:27017
+```
+
+---
+
+# 12. MongoDB Connectivity Test
+
+MongoDB authentication and Service connectivity were tested using:
+
+```bash
+kubectl run mongo-test \
+  --image=mongo:6 \
+  --rm -it \
+  --restart=Never \
+  -n assignment1 \
+  -- mongosh "mongodb://admin:SuperSecret123@mongodb-service:27017/admin"
+```
+
+The connection succeeded.
+
+This confirmed that:
+
+* MongoDB was running
+* The MongoDB Service was reachable
+* The credentials were valid
+* Kubernetes DNS was resolving `mongodb-service`
+
+Important: the current backend example does not actually query MongoDB. It only receives and returns the configured MongoDB host and username. The MongoDB connectivity test was performed separately.
+
+---
+
+# 13. Backend Service Test
+
+The backend Service was tested from inside the Kubernetes namespace:
+
+```bash
+kubectl run test-client \
+  --image=curlimages/curl \
+  --rm -it \
+  --restart=Never \
+  -n assignment1 \
+  -- curl http://backend-service:3000
+```
+
+The response was:
+
+```json
+{
+  "message": "Backend is running",
+  "dbHost": "mongodb-service",
+  "dbUser": "admin"
+}
+```
+
+This confirmed that:
+
+```text
+backend-service
+        |
+        v
+backend Pods
+```
+
+were communicating correctly.
+
+---
+
+# 14. Kubernetes Services
+
+Three internal ClusterIP Services were created.
+
+## Backend
+
+```text
+backend-service
+ClusterIP
+Port: 3000
+```
+
+## Frontend
+
+```text
+frontend-service
+ClusterIP
+Port: 80
+```
+
+## MongoDB
+
+```text
+mongodb-service
+ClusterIP
+Port: 27017
+```
+
+The Services provide stable Kubernetes DNS names even if the individual Pods are recreated.
+
+---
+
+# 15. NGINX Ingress
+
+The Minikube Ingress addon was enabled:
+
+```bash
+minikube addons enable ingress -p assignment1
+```
+
+The NGINX Ingress controller was verified:
+
+```bash
+kubectl get pods -n ingress-nginx
+```
+
+The controller was running successfully.
+
+---
+
+# 16. Ingress Configuration
+
+The application Ingress is defined in:
+
+```text
+k8s/app-ingress.yaml
+```
+
+The hostname is:
+
+```text
+myapp.example.com
+```
+
+Routing rules:
+
+```text
+/api  → backend-service:3000
+/     → frontend-service:80
+```
+
+The Ingress therefore provides one external entry point for both application components.
+
+---
+
+# 17. Ingress Security / RBAC
+
+A Kubernetes ServiceAccount was created:
+
+```bash
+kubectl create serviceaccount platform-team -n assignment1
+```
+
+A Role was created to allow controlled modification of Ingress resources:
+
+```bash
+kubectl create role ingress-editor \
+  --verb=get,list,watch,update,patch \
+  --resource=ingresses \
+  -n assignment1
+```
+
+A RoleBinding connected the ServiceAccount to the Role:
+
+```bash
+kubectl create rolebinding platform-team-can-edit-ingress \
+  --role=ingress-editor \
+  --serviceaccount=assignment1:platform-team \
+  -n assignment1
+```
+
+Permission was tested:
+
+```bash
+kubectl auth can-i update ingresses \
+  --as=system:serviceaccount:assignment1:platform-team \
+  -n assignment1
+```
+
+Result:
+
+```text
+yes
+```
+
+The default ServiceAccount was also tested and did not have the same permission.
+
+This demonstrates the principle of **least privilege**: access should be granted only to the resources and operations that are required.
+
+---
+
+# 18. Ingress Controller Security Configuration
+
+The NGINX Ingress controller ConfigMap was configured with:
+
+```yaml
+allow-snippet-annotations: "false"
+```
+
+This prevents arbitrary NGINX configuration snippets from being injected through Ingress annotations.
+
+The controller was restarted:
+
+```bash
+kubectl rollout restart deployment/ingress-nginx-controller \
+  -n ingress-nginx
+```
+
+The rollout was verified with:
+
+```bash
+kubectl rollout status deployment/ingress-nginx-controller \
+  -n ingress-nginx
+```
+
+---
+
+# 19. cert-manager Installation
+
+cert-manager was installed using Helm.
+
+The Jetstack repository was added:
+
+```bash
+helm repo add jetstack https://charts.jetstack.io
+```
+
+Then:
+
+```bash
+helm repo update
+```
+
+The available cert-manager versions were checked:
+
+```bash
+helm search repo jetstack/cert-manager --versions | head -10
+```
+
+Version `v1.21.2` was selected.
+
+Installation:
+
+```bash
+helm install cert-manager jetstack/cert-manager \
+  --namespace cert-manager \
+  --create-namespace \
+  --version v1.21.2 \
+  --set crds.enabled=true
+```
+
+The cert-manager components were verified:
+
+```bash
+kubectl get pods -n cert-manager
+```
+
+The following components were running:
+
+```text
+cert-manager
+cert-manager-cainjector
+cert-manager-webhook
+```
+
+---
+
+# 20. Self-Signed ClusterIssuer
+
+A ClusterIssuer was created in:
+
+```text
+k8s/cluster-issuer.yaml
+```
+
+```yaml
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: selfsigned-issuer
+spec:
+  selfSigned: {}
+```
+
+It was applied with:
+
+```bash
+kubectl apply -f k8s/cluster-issuer.yaml
+```
+
+Verification:
+
+```bash
+kubectl get clusterissuer
+```
+
+Result:
+
+```text
+selfsigned-issuer   True
+```
+
+---
+
+# 21. TLS Configuration
+
+The Ingress was updated to use the self-signed issuer:
+
+```yaml
+annotations:
+  cert-manager.io/cluster-issuer: selfsigned-issuer
+  nginx.ingress.kubernetes.io/ssl-redirect: "true"
+```
+
+TLS configuration:
+
+```yaml
+tls:
+  - hosts:
+      - myapp.example.com
+    secretName: app-tls-secret
+```
+
+The change from:
+
+```yaml
+ssl-redirect: "false"
+```
+
+to:
+
+```yaml
+ssl-redirect: "true"
+```
+
+was made because HTTPS was now configured.
+
+This means HTTP requests are redirected to HTTPS.
+
+---
+
+# 22. Certificate Verification
+
+The generated TLS Secret was checked:
+
+```bash
+kubectl get secret app-tls-secret -n assignment1
+```
+
+Result:
+
+```text
+app-tls-secret   kubernetes.io/tls
+```
+
+The certificate was also checked:
+
+```bash
+kubectl get certificate -n assignment1
+```
+
+Result:
+
+```text
+NAME             READY
+app-tls-secret   True
+```
+
+The certificate details showed:
+
+```text
+DNS Name:
+myapp.example.com
+
+Issuer:
+selfsigned-issuer
+
+Status:
+True
+```
+
+This confirmed that cert-manager successfully generated the certificate.
+
+---
+
+# 23. HTTPS Testing
+
+The Minikube IP was:
+
+```text
+192.168.76.2
+```
+
+HTTPS frontend testing was performed with:
+
+```bash
+curl -k --resolve myapp.example.com:443:192.168.76.2 \
+  https://myapp.example.com/
+```
+
+The response contained:
+
+```html
+<h1>Welcome to Our Store</h1>
+```
+
+The backend was tested with:
+
+```bash
+curl -k --resolve myapp.example.com:443:192.168.76.2 \
+  https://myapp.example.com/api
+```
+
+The response was:
+
+```json
+{
+  "message": "Backend is running",
+  "dbHost": "mongodb-service",
+  "dbUser": "admin"
+}
+```
+
+The `-k` option was required because the certificate is self-signed and therefore is not trusted by the normal system certificate authority.
+
+---
+
+# 24. HTTP to HTTPS Redirect
+
+The redirect was tested with:
+
+```bash
+curl -I http://myapp.example.com
+```
+
+The result was:
+
+```text
+HTTP/1.1 308 Permanent Redirect
+Location: https://myapp.example.com
+```
+
+This confirms that HTTP traffic is automatically redirected to HTTPS.
+
+---
+
+# 25. Local Hostname Configuration
+
+Because `myapp.example.com` is not a real DNS record pointing to the local Minikube cluster, the local Ubuntu `/etc/hosts` file was updated.
+
+The following entry was added:
+
+```text
+192.168.76.2 myapp.example.com
+```
+
+It was verified with:
+
+```bash
+getent hosts myapp.example.com
+```
+
+Result:
+
+```text
+192.168.76.2    myapp.example.com
+```
+
+This allows the local computer to resolve:
+
+```text
+myapp.example.com
+```
+
+to the Minikube IP.
+
+---
+
+# 26. Browser Verification
+
+The application was successfully opened in the browser using:
+
+```text
+https://myapp.example.com
+```
+
+The frontend displayed:
+
+```text
+Welcome to Our Store
+```
+
+The backend was also accessible through:
+
+```text
+https://myapp.example.com/api
+```
+
+This confirmed that the complete Ingress and HTTPS setup works from the browser.
+
+---
+
+# 27. Kustomize
+
+After the individual Kubernetes resources had been tested, Kustomize was used to manage the complete deployment.
+
+The file:
+
+```text
+k8s/kustomization.yaml
+```
+
+contains:
+
+```yaml
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: assignment1
+
+resources:
+  - namespace.yaml
+  - frontend-config.yaml
+  - backend-config-v2.yaml
+  - secret.yaml
+  - frontend-deployment.yaml
+  - backend-deployment.yaml
+  - mongodb-deployment.yaml
+  - app-ingress.yaml
+  - cluster-issuer.yaml
+```
+
+The old `backend-config.yaml` was removed from the Kustomization because the application now uses:
+
+```text
+backend-config-v2
+```
+
+---
+
+# 28. Kustomize Validation
+
+Before applying the complete configuration, the generated Kubernetes manifests were previewed:
+
+```bash
+kubectl kustomize k8s/
+```
+
+The output showed all expected resources.
+
+The complete configuration was then deployed using:
+
+```bash
+kubectl apply -k k8s/
+```
+
+The result showed resources being created or reported as unchanged/configured.
+
+This demonstrated that the entire application can now be managed using a single Kustomize command.
+
+---
+
+# 29. Final Deployment Verification
+
+The final Pods were checked with:
+
+```bash
+kubectl get pods -n assignment1
+```
+
+The final state was:
+
+```text
+backend    1/1 Running
+backend    1/1 Running
+frontend   1/1 Running
+frontend   1/1 Running
+mongodb    1/1 Running
+```
+
+Services:
+
+```bash
+kubectl get svc -n assignment1
+```
+
+Result:
+
+```text
+backend-service    ClusterIP   3000/TCP
+frontend-service   ClusterIP   80/TCP
+mongodb-service    ClusterIP   27017/TCP
+```
+
+Ingress:
+
+```bash
+kubectl get ingress -n assignment1
+```
+
+Result:
+
+```text
+app-ingress   nginx   myapp.example.com   192.168.76.2   80,443
+```
+
+Certificate:
+
+```bash
+kubectl get certificate -n assignment1
+```
+
+Result:
+
+```text
+app-tls-secret   True
+```
+
+---
+
+# 30. Final Result
+
+The project successfully demonstrates a Kubernetes application deployed on Minikube with:
+
+* Kubernetes namespace isolation
+* Frontend Deployment
+* Backend Deployment
+* MongoDB Deployment
+* Kubernetes Services
+* ConfigMaps
+* Immutable ConfigMap versioning
+* Kubernetes Secrets
+* NGINX Ingress
+* Ingress routing
+* RBAC
+* Ingress security configuration
+* cert-manager
+* Self-signed TLS certificate
+* HTTP → HTTPS redirection
+* HTTPS application access
+* Kustomize-based deployment
+* Browser verification
+
+The final access path is:
+
+```text
+https://myapp.example.com
+```
+
+Frontend:
+
+```text
+https://myapp.example.com/
+```
+
+Backend:
+
+```text
+https://myapp.example.com/api
+```
+
+The complete Kubernetes configuration can be deployed with:
+
+```bash
+kubectl apply -k k8s/
+```
+
+The final architecture demonstrates how multiple application components can be deployed, secured, configured, exposed, and managed using Kubernetes on a local Minikube cluster.
